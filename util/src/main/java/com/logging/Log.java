@@ -4,6 +4,9 @@ import android.content.Context;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.LineNumberInputStream;
@@ -146,7 +149,7 @@ public class Log {
 
         try {
             // Open the log file just to read the number of lines
-            LineNumberInputStream lineNumberInputStream = new LineNumberInputStream(mContext.openFileInput(FILENAME));
+            LineNumberInputStream lineNumberInputStream = new LineNumberInputStream(getInputStream(FILENAME));
 
             // Count the number of lines in the file
             while (lineNumberInputStream.read() > 0);
@@ -388,7 +391,7 @@ public class Log {
 
         try {
             // Read the entire file and append it to the StringBuilder
-            BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(mContext.openFileInput(FILENAME)));
+            BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(getInputStream(FILENAME)));
 
             String currentLine;
             // Step through the file line by line and add each line to the StringBuilder
@@ -415,7 +418,7 @@ public class Log {
 
             try {
                 // Re-create the file, but leave it empty
-                BufferedWriter bufferedWriter = new BufferedWriter(new PrintWriter(mContext.openFileOutput(FILENAME, Context.MODE_APPEND)));
+                BufferedWriter bufferedWriter = new BufferedWriter(new PrintWriter(getOutputStream(FILENAME)));
                 bufferedWriter.close();
             } catch (IOException ioException) {
                 // Do nothing here because if there was an error in re-creating the file, then there's
@@ -472,14 +475,19 @@ public class Log {
 
                 // Open the file to write to
                 // Will create a file if it's not found
-                BufferedWriter bufferedWriter = new BufferedWriter(new PrintWriter(mContext.openFileOutput(FILENAME, Context.MODE_APPEND)));
+                BufferedWriter bufferedWriter = new BufferedWriter(new PrintWriter(getOutputStream(FILENAME)));
                 // Append to the end of the existing file
                 bufferedWriter.append(currentEntry);
                 bufferedWriter.newLine();
                 bufferedWriter.close();
 
                 // Find the number of occurrences of "\n" in the current entry
-                int count = currentEntry.length() - currentEntry.replace("\n", "").length();
+                int count = 0;
+                for (int i = 0; i < currentEntry.length(); i++) {
+                    if (currentEntry.charAt(i) == '\n') {
+                        count++;
+                    }
+                }
 
                 // Increment the number of lines in this file by the number of lines in the entry
                 // plus 1 for the new line appended to bufferedWriter
@@ -503,7 +511,7 @@ public class Log {
         try {
             // Create a BufferedReader to read the existing file, and a BufferedWriter to write to
             // a temporary file
-            BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(mContext.openFileInput(FILENAME)));
+            BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(getInputStream(FILENAME)));
 
             // Read and discard the first NUM_LINES_PER_CHUNK lines
             for (int i = 0; i < NUM_LINES_PER_CHUNK; i++) {
@@ -516,7 +524,7 @@ public class Log {
             }
 
             if (!eofEarly) {
-                BufferedWriter bufferedWriter = new BufferedWriter(new OutputStreamWriter(mContext.openFileOutput(TEMP_FILENAME, Context.MODE_APPEND)));
+                BufferedWriter bufferedWriter = new BufferedWriter(new OutputStreamWriter(getOutputStream(TEMP_FILENAME)));
 
                 String currentLine;
                 // Step through the rest of the file and write each line to the temporary file
@@ -609,5 +617,27 @@ public class Log {
         }
 
         return sb.toString();
+    }
+
+    /**
+     * Get a FileInputStream to represent the specified file.
+     *
+     * @param fileName The name of the file to open.
+     * @return A FileInputStream representing the file.
+     * @throws FileNotFoundException If the file could not be opened.
+     */
+    private static FileInputStream getInputStream(String fileName) throws FileNotFoundException {
+        return mContext.openFileInput(fileName);
+    }
+
+    /**
+     * Get a FileOutputStream to represent the specified file.
+     *
+     * @param fileName The name of the file to open.
+     * @return A FileOutputStream representing the file.
+     * @throws FileNotFoundException If the file could not be opened.
+     */
+    private static FileOutputStream getOutputStream(String fileName) throws FileNotFoundException {
+        return mContext.openFileOutput(fileName, Context.MODE_APPEND);
     }
 }
