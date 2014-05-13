@@ -2,17 +2,18 @@ package com.logging;
 
 import android.content.Context;
 import android.test.ActivityTestCase;
+
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
 
 
 /**
- * Testing class for com.util.Log.
- *
+ * Testing class for com.util.Log. The reason why most methods have a 1 second delay is to ensure
+ * that the write thread has had time to perform all of the write operations.
  * Created by bcwatling on 09/05/14.
  */
-public class LogTest extends ActivityTestCase {
+public class LogTests extends ActivityTestCase {
 
     /**
      * The context to use with Log.init().
@@ -64,7 +65,7 @@ public class LogTest extends ActivityTestCase {
             // Write more than CIRCULAR_BUFFER_SIZE lines to the buffer
             for (int i = 0; i < Log.CIRCULAR_BUFFER_SIZE + Log.NUM_LINES_PER_CHUNK * 2; i++) {
                 // Append a whole bunch of empty lines to the file
-                bufferedWriter.append(' ').append('\n');
+                bufferedWriter.append(' ').append(System.getProperty("line.separator"));
             }
             bufferedWriter.close();
             successfullyWroteFile = true;
@@ -77,7 +78,7 @@ public class LogTest extends ActivityTestCase {
         // Re-init because we want to test that the initialization trims the file down properly
         Log.init(mContext);
 
-        int numLines = Log.getLogFile().split("\n").length;
+        int numLines = Log.getLogFile().split(System.getProperty("line.separator")).length;
 
         // After initialization, the number of lines in the log file should be
         // <= Log.CIRCULAR_BUFFER_SIZE
@@ -100,7 +101,13 @@ public class LogTest extends ActivityTestCase {
             Log.d("LogTest", "testLogCircularBuffer");
         }
 
-        int numLines = Log.getLogFile().split("\n").length;
+        try {
+            Thread.sleep(2000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
+        int numLines = Log.getLogFile().split(System.getProperty("line.separator")).length;
         assertTrue("The circular buffer did not remove enough lines", numLines <= Log.CIRCULAR_BUFFER_SIZE);
         assertTrue("The circular buffer removed too many lines", numLines >= Log.CIRCULAR_BUFFER_SIZE - Log.NUM_LINES_PER_CHUNK);
     }
@@ -116,6 +123,12 @@ public class LogTest extends ActivityTestCase {
 
         // Make sure something gets put into the Log file
         Log.d("LogTest", "testLogClearFile");
+
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
 
         Log.clearLogFile();
 
@@ -135,6 +148,12 @@ public class LogTest extends ActivityTestCase {
 
         // Call the verbose log function
         Log.v("LogTest", "testLogVerbose " + now);
+
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
 
         String logFile = Log.getLogFile();
 
@@ -159,10 +178,16 @@ public class LogTest extends ActivityTestCase {
         // Call the verbose log function
         Log.v("LogTest", "testLogVerbose " + now, tr);
 
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
         String logFile = Log.getLogFile();
 
         // After the log, the log file should contain the entry
-        assertTrue("Log.v could not write to file with Throwable", logFile.contains("[VERBOSE] LogTest testLogVerbose " + now + "\n" + Log.getStackTraceString(tr)));
+        assertTrue("Log.v could not write to file with Throwable", logFile.contains("[VERBOSE] LogTest testLogVerbose " + now + System.getProperty("line.separator") + Log.getStackTraceString(tr)));
     }
 
     /**
@@ -178,6 +203,12 @@ public class LogTest extends ActivityTestCase {
 
         // Call the debug log function
         Log.d("LogTest", "testLogDebug " + now);
+
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
 
         String logFile = Log.getLogFile();
 
@@ -202,10 +233,16 @@ public class LogTest extends ActivityTestCase {
         // Call the debug log function
         Log.d("LogTest", "testLogDebug " + now, tr);
 
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
         String logFile = Log.getLogFile();
 
         // After the log, the log file should contain the entry
-        assertTrue("Log.d could not write to file with Throwable", logFile.contains("[DEBUG] LogTest testLogDebug " + now + "\n" + Log.getStackTraceString(tr)));
+        assertTrue("Log.d could not write to file with Throwable", logFile.contains("[DEBUG] LogTest testLogDebug " + now + System.getProperty("line.separator") + Log.getStackTraceString(tr)));
     }
 
     /**
@@ -221,6 +258,12 @@ public class LogTest extends ActivityTestCase {
 
         // Call the info log function
         Log.i("LogTest", "testLogInfo " + now);
+
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
 
         String logFile = Log.getLogFile();
 
@@ -245,10 +288,16 @@ public class LogTest extends ActivityTestCase {
         // Call the info log function
         Log.i("LogTest", "testLogInfo " + now, tr);
 
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
         String logFile = Log.getLogFile();
 
         // After the log, the log file should contain the entry
-        assertTrue("Log.i could not write to file with Throwable", logFile.contains("[INFO] LogTest testLogInfo " + now + "\n" + Log.getStackTraceString(tr)));
+        assertTrue("Log.i could not write to file with Throwable", logFile.contains("[INFO] LogTest testLogInfo " + now + System.getProperty("line.separator") + Log.getStackTraceString(tr)));
     }
 
     /**
@@ -264,6 +313,12 @@ public class LogTest extends ActivityTestCase {
 
         // Call the warn log function
         Log.w("LogTest", "testLogWarning " + now);
+
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
 
         String logFile = Log.getLogFile();
 
@@ -288,10 +343,16 @@ public class LogTest extends ActivityTestCase {
         // Call the warn log function
         Log.w("LogTest", "testLogWarning " + now, tr);
 
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
         String logFile = Log.getLogFile();
 
         // After the log, the log file should contain the entry
-        assertTrue("Log.w could not write to file with Throwable", logFile.contains("[WARNING] LogTest testLogWarning " + now + "\n" + Log.getStackTraceString(tr)));
+        assertTrue("Log.w could not write to file with Throwable", logFile.contains("[WARNING] LogTest testLogWarning " + now + System.getProperty("line.separator") + Log.getStackTraceString(tr)));
     }
 
     /**
@@ -308,6 +369,12 @@ public class LogTest extends ActivityTestCase {
 
         // Call the warn log function
         Log.w("LogTest", tr);
+
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
 
         String logFile = Log.getLogFile();
 
@@ -328,6 +395,12 @@ public class LogTest extends ActivityTestCase {
 
         // Call the error log function
         Log.e("LogTest", "testLogError " + now);
+
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
 
         String logFile = Log.getLogFile();
 
@@ -352,10 +425,16 @@ public class LogTest extends ActivityTestCase {
         // Call the error log function
         Log.e("LogTest", "testLogError " + now, tr);
 
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
         String logFile = Log.getLogFile();
 
         // After the log, the log file should contain the entry
-        assertTrue("Log.e could not write to file with Throwable", logFile.contains("[ERROR] LogTest testLogError " + now + "\n" + Log.getStackTraceString(tr)));
+        assertTrue("Log.e could not write to file with Throwable", logFile.contains("[ERROR] LogTest testLogError " + now + System.getProperty("line.separator") + Log.getStackTraceString(tr)));
     }
 
     /**
@@ -376,6 +455,12 @@ public class LogTest extends ActivityTestCase {
         Log.println(Log.WARN, "LogTest", "testLogPrintln " + now);
         Log.println(Log.ERROR, "LogTest", "testLogPrintln " + now);
         Log.println(Log.ASSERT, "LogTest", "testLogPrintln " + now);
+
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
 
         String logFile = Log.getLogFile();
 

@@ -1,6 +1,7 @@
 package com.logging;
 
 import android.content.Context;
+
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
@@ -13,35 +14,41 @@ import java.io.LineNumberInputStream;
 import java.io.PrintWriter;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.Locale;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * <p>A wrapper class for the android.util.Log class. Intercepts all calls to android.util.Log
  * functions, records the logged information in a the file system on the device, and passes
  * it on to android.util.Log. The file acts as a circular buffer, keeping it from consuming
  * too much space on the file system.</p>
- *
+ * <p/>
  * <p>Note: If an entry contains more lines than Log.CIRCULAR_BUFFER_SIZE, then it is possible that
  * the entry will eventually be split up, since the circular buffer implemented in this class limits
  * the number of lines in the log file, rather than the number of entries.</p>
- *
+ * <p>Whenever a Log request is made, it gets added to a buffer that gets appended to the log file
+ * on a dedicated thread. When methods like clearLogFile() and getLogFile() are called, they must
+ * wait to for the read/write lock to be released by the write thread. This means that these calls
+ * will be delayed until the write thread completes its current write job.</p>
+ * <p/>
  * API for sending log output.
- *
+ * <p/>
  * <p>Generally, use the Log.v() Log.d() Log.i() Log.w() and Log.e()
  * methods.
- *
+ * <p/>
  * <p>The order in terms of verbosity, from least to most is
  * ERROR, WARN, INFO, DEBUG, VERBOSE.  Verbose should never be compiled
  * into an application except during development.  Debug logs are compiled
  * in but stripped at runtime.  Error, warning and info logs are always kept.
- *
+ * <p/>
  * <p><b>Tip:</b> A good convention is to declare a <code>TAG</code> constant
  * in your class:
- *
+ * <p/>
  * <pre>private static final String TAG = "MyActivity";</pre>
- *
+ * <p/>
  * and use that in subsequent calls to the log methods.
  * </p>
- *
+ * <p/>
  * <p><b>Tip:</b> Don't forget that when you make a call like
  * <pre>Log.v(TAG, "index=" + i);</pre>
  * that when you're building the string to pass into Log.d, the compiler uses a
@@ -105,15 +112,31 @@ public class Log {
     protected static final String TEMP_FILENAME = FILENAME + "_temp";
 
     /**
-     * A context that provides access to the file system. Will most commonly be a reference to the
-     * application's main activity.
+     * The system's newline String
      */
-    private static Context mContext;
+    private static final String mNewLine = System.getProperty("line.separator");
 
     /**
      * A SimpleDateFormat object used to create a timestamp for each entry.
      */
-    private static final SimpleDateFormat mSimpleDateFormat = new SimpleDateFormat("MM-dd kk:mm:ss.SSS");
+    private static final SimpleDateFormat mSimpleDateFormat =
+            new SimpleDateFormat("MM-dd kk:mm:ss.SSS", Locale.US);
+
+    /**
+     * The lock for file I/O operations
+     */
+    private static final ReentrantLock mFileLock = new ReentrantLock();
+
+    /**
+     * The lock for changes to the StringBuilder mCurrentEntries
+     */
+    private static final ReentrantLock mEntriesLock = new ReentrantLock();
+
+    /**
+     * Context that provides access to the file system. Will most commonly be a reference to the
+     * application's main activity.
+     */
+    private static Context mContext;
 
     /**
      * Keeps track of the number of entries in the log file
@@ -126,10 +149,24 @@ public class Log {
     private static boolean mInitialized;
 
     /**
+     * StringBuilder representing the current log entries that are waiting to be written to the log
+     * file. When it's ready to be written to the log file, it is converted to a String.
+     */
+    private static StringBuilder mCurrentEntries;
+
+    /**
+     * The dedicated thread for writing new entries to the log file.
+     */
+    private static WriteThread mWriteThread;
+
+    /**
      * Initialize Log for use. This function must be called before calls to any other function are
      * made. If this function is not called first, then the functions will simply call the
      * corresponding function in android.util.Log, and nothing will be written to the log file.
-     *
+     * <p/>
+     * This method should be synchronized in case multiple threads call it at the same time, but
+     * really it should only be called once. The synchronized here is just a safety measure.
+     * <p/>
      * Calling this function also trims the log file down to the correct size if, for some reason,
      * it has exceeded its maximum buffer size.
      *
@@ -137,199 +174,209 @@ public class Log {
      *                main activity will do.
      * @return A boolean representing the success of the initialization
      */
-    public static boolean init(Context context) {
-        if (context == null) {
-            return (mInitialized = false);
-        }
-
-        mContext = context;
-        mNumLines = 0;
-
+    public static synchronized boolean init(Context context) {
+        mFileLock.lock();
         try {
-            // Open the log file just to read the number of lines
-            LineNumberInputStream lineNumberInputStream = new LineNumberInputStream(getInputStream(FILENAME));
-
-            // Count the number of lines in the file
-            while (lineNumberInputStream.read() > 0);
-            lineNumberInputStream.close();
-
-            mNumLines = lineNumberInputStream.getLineNumber();
-
-            // If we exceed CIRCULAR_BUFFER_SIZE, trim it down to be below CIRCULAR_BUFFER_SIZE
-            if (mNumLines > CIRCULAR_BUFFER_SIZE) {
-                // Determine how many extra lines we have
-                int diff = mNumLines - CIRCULAR_BUFFER_SIZE;
-
-                // Remove chunks until the difference is <= 0
-                for (; diff > 0; diff -= NUM_LINES_PER_CHUNK) {
-                    removeChunk();
-                }
+            if (context == null) {
+                return (mInitialized = false);
             }
-        } catch (IOException ioException) {
-            // We shouldn't do anything here, since the IOException gives no feedback on whether we
-            // could access the file system - it only tells us "FileNotFound".
-        }
 
-        return (mInitialized = true);
+            mContext = context;
+            mNumLines = 0;
+
+            try {
+                // Open the log file just to read the number of lines
+                LineNumberInputStream lineNumberInputStream =
+                        new LineNumberInputStream(getInputStream(FILENAME));
+
+                // Count the number of lines in the file
+                while (lineNumberInputStream.read() > 0) ;
+
+                mNumLines = lineNumberInputStream.getLineNumber();
+
+                lineNumberInputStream.close();
+
+                trimFileToSize();
+            } catch (IOException ioException) {
+                // We shouldn't do anything here, since the IOException gives no feedback on whether
+                // we could access the file system - it only tells us "FileNotFound".
+            }
+
+            return (mInitialized = true);
+        } finally {
+            mFileLock.unlock();
+        }
     }
 
     /**
      * Send a {@link #VERBOSE} log message.
      *
      * @param tag Used to identify the source of a log message.  It usually identifies
-     *        the class or activity where the log call occurs.
+     *            the class or activity where the log call occurs.
      * @param msg The message you would like logged.
      */
     public static int v(String tag, String msg) {
+        int ret = android.util.Log.v(tag, msg);
         if (mInitialized) {
-            writeToFile(VERBOSE, tag, msg);
+            addEntryToStack(VERBOSE, tag, msg);
         }
-        return android.util.Log.v(tag, msg);
+        return ret;
     }
 
     /**
+     * /**
      * Send a {@link #VERBOSE} log message and log the exception.
      *
      * @param tag Used to identify the source of a log message.  It usually identifies
-     *        the class or activity where the log call occurs.
+     *            the class or activity where the log call occurs.
      * @param msg The message you would like logged.
-     * @param tr An exception to log
+     * @param tr  An exception to log
      */
     public static int v(String tag, String msg, Throwable tr) {
+        int ret = android.util.Log.v(tag, msg, tr);
         if (mInitialized) {
-            writeToFile(VERBOSE, tag, msg, tr);
+            addEntryToStack(VERBOSE, tag, msg, tr);
         }
-        return android.util.Log.v(tag, msg, tr);
+        return ret;
     }
 
     /**
      * Send a {@link #DEBUG} log message.
      *
      * @param tag Used to identify the source of a log message.  It usually identifies
-     *        the class or activity where the log call occurs.
+     *            the class or activity where the log call occurs.
      * @param msg The message you would like logged.
      */
     public static int d(String tag, String msg) {
+        int ret = android.util.Log.d(tag, msg);
         if (mInitialized) {
-            writeToFile(DEBUG, tag, msg);
+            addEntryToStack(DEBUG, tag, msg);
         }
-        return android.util.Log.d(tag, msg);
+        return ret;
     }
 
     /**
      * Send a {@link #DEBUG} log message and log the exception.
      *
      * @param tag Used to identify the source of a log message.  It usually identifies
-     *        the class or activity where the log call occurs.
+     *            the class or activity where the log call occurs.
      * @param msg The message you would like logged.
-     * @param tr An exception to log
+     * @param tr  An exception to log
      */
     public static int d(String tag, String msg, Throwable tr) {
+        int ret = android.util.Log.d(tag, msg, tr);
         if (mInitialized) {
-            writeToFile(DEBUG, tag, msg, tr);
+            addEntryToStack(DEBUG, tag, msg, tr);
         }
-        return android.util.Log.d(tag, msg, tr);
+        return ret;
     }
 
     /**
      * Send an {@link #INFO} log message.
      *
      * @param tag Used to identify the source of a log message.  It usually identifies
-     *        the class or activity where the log call occurs.
+     *            the class or activity where the log call occurs.
      * @param msg The message you would like logged.
      */
     public static int i(String tag, String msg) {
+        int ret = android.util.Log.i(tag, msg);
         if (mInitialized) {
-            writeToFile(INFO, tag, msg);
+            addEntryToStack(INFO, tag, msg);
         }
-        return android.util.Log.i(tag, msg);
+        return ret;
     }
 
     /**
      * Send a {@link #INFO} log message and log the exception.
      *
      * @param tag Used to identify the source of a log message.  It usually identifies
-     *        the class or activity where the log call occurs.
+     *            the class or activity where the log call occurs.
      * @param msg The message you would like logged.
-     * @param tr An exception to log
+     * @param tr  An exception to log
      */
     public static int i(String tag, String msg, Throwable tr) {
+        int ret = android.util.Log.i(tag, msg, tr);
         if (mInitialized) {
-            writeToFile(INFO, tag, msg, tr);
+            addEntryToStack(INFO, tag, msg, tr);
         }
-        return android.util.Log.i(tag, msg, tr);
+        return ret;
     }
 
     /**
      * Send a {@link #WARN} log message.
      *
      * @param tag Used to identify the source of a log message.  It usually identifies
-     *        the class or activity where the log call occurs.
+     *            the class or activity where the log call occurs.
      * @param msg The message you would like logged.
      */
     public static int w(String tag, String msg) {
+        int ret = android.util.Log.w(tag, msg);
         if (mInitialized) {
-            writeToFile(WARN, tag, msg);
+            addEntryToStack(WARN, tag, msg);
         }
-        return android.util.Log.w(tag, msg);
+        return ret;
     }
 
     /**
      * Send a {@link #WARN} log message and log the exception.
      *
      * @param tag Used to identify the source of a log message.  It usually identifies
-     *        the class or activity where the log call occurs.
+     *            the class or activity where the log call occurs.
      * @param msg The message you would like logged.
-     * @param tr An exception to log
+     * @param tr  An exception to log
      */
     public static int w(String tag, String msg, Throwable tr) {
+        int ret = android.util.Log.w(tag, msg, tr);
         if (mInitialized) {
-            writeToFile(WARN, tag, msg, tr);
+            addEntryToStack(WARN, tag, msg, tr);
         }
-        return android.util.Log.w(tag, msg, tr);
+        return ret;
     }
 
     /**
      * Send a {@link #WARN} log message and log the exception.
      *
      * @param tag Used to identify the source of a log message.  It usually identifies
-     *        the class or activity where the log call occurs.
-     * @param tr An exception to log
+     *            the class or activity where the log call occurs.
+     * @param tr  An exception to log
      */
     public static int w(String tag, Throwable tr) {
+        int ret = android.util.Log.w(tag, tr);
         if (mInitialized) {
-            writeToFile(WARN, tag, tr);
+            addEntryToStack(WARN, tag, tr);
         }
-        return android.util.Log.w(tag, tr);
+        return ret;
     }
 
     /**
      * Send an {@link #ERROR} log message.
      *
      * @param tag Used to identify the source of a log message.  It usually identifies
-     *        the class or activity where the log call occurs.
+     *            the class or activity where the log call occurs.
      * @param msg The message you would like logged.
      */
     public static int e(String tag, String msg) {
+        int ret = android.util.Log.e(tag, msg);
         if (mInitialized) {
-            writeToFile(ERROR, tag, msg);
+            addEntryToStack(ERROR, tag, msg);
         }
-        return android.util.Log.e(tag, msg);
+        return ret;
     }
 
     /**
      * Send a {@link #ERROR} log message and log the exception.
      *
      * @param tag Used to identify the source of a log message.  It usually identifies
-     *        the class or activity where the log call occurs.
+     *            the class or activity where the log call occurs.
      * @param msg The message you would like logged.
-     * @param tr An exception to log
+     * @param tr  An exception to log
      */
     public static int e(String tag, String msg, Throwable tr) {
+        int ret = android.util.Log.e(tag, msg, tr);
         if (mInitialized) {
-            writeToFile(ERROR, tag, msg, tr);
+            addEntryToStack(ERROR, tag, msg, tr);
         }
-        return android.util.Log.e(tag, msg, tr);
+        return ret;
     }
 
     /**
@@ -367,14 +414,14 @@ public class Log {
      * Low-level logging call.
      *
      * @param priority The priority/type of this log message
-     * @param tag Used to identify the source of a log message.  It usually identifies
-     *        the class or activity where the log call occurs.
-     * @param msg The message you would like logged.
+     * @param tag      Used to identify the source of a log message.  It usually identifies
+     *                 the class or activity where the log call occurs.
+     * @param msg      The message you would like logged.
      * @return The number of bytes written.
      */
     public static int println(int priority, String tag, String msg) {
         if (mInitialized) {
-            writeToFile(priority, tag, msg);
+            addEntryToStack(priority, tag, msg);
         }
         return android.util.Log.println(priority, tag, msg);
     }
@@ -385,43 +432,61 @@ public class Log {
      * @return The contents of the log file as a String, null if the log file could not be opened.
      */
     public static String getLogFile() {
-        StringBuilder sb = new StringBuilder();
+        StringBuilder stringBuilder = new StringBuilder();
 
+        mFileLock.lock();
         try {
-            // Read the entire file and append it to the StringBuilder
-            BufferedReader bufferedReader = getBufferedReader(FILENAME);
+            try {
+                // Read the entire file and append it to the StringBuilder
+                BufferedReader bufferedReader = getBufferedReader(FILENAME);
 
-            String currentLine;
-            // Step through the file line by line and add each line to the StringBuilder
-            while ((currentLine = bufferedReader.readLine()) != null) {
-                sb.append(currentLine).append('\n');
+                String currentLine;
+                // Step through the file line by line and add each line to the StringBuilder
+                while ((currentLine = bufferedReader.readLine()) != null) {
+                    stringBuilder.append(currentLine).append(mNewLine);
+                }
+
+                bufferedReader.close();
+            } catch (IOException ioException) {
+                // If there was a failure in reading the log file
+                return null;
             }
-
-            bufferedReader.close();
-        } catch (IOException ioException) {
-            // If there was a failure in reading the log file
-            return null;
+        } finally {
+            mFileLock.unlock();
         }
 
         // Return the built String
-        return sb.toString();
+        return stringBuilder.toString();
     }
 
     /**
      * Clears the log file.
      */
     public static void clearLogFile() {
-        if (mContext != null) {
-            mContext.deleteFile(FILENAME);
+        mEntriesLock.lock();
+        try {
+            mCurrentEntries = null;
+        } finally {
+            mEntriesLock.unlock();
+        }
 
-            try {
-                // Re-create the file, but leave it empty
-                BufferedWriter bufferedWriter = getBufferedWriter(FILENAME);
-                bufferedWriter.close();
-            } catch (IOException ioException) {
-                // Do nothing here because if there was an error in re-creating the file, then there's
-                // nothing we can do
+        // We need to wait for the lock before we can clear the file
+        mFileLock.lock();
+        try {
+            if (mContext != null) {
+                mContext.deleteFile(FILENAME);
+
+                try {
+                    // Re-create the file, but leave it empty
+                    BufferedWriter bufferedWriter = getBufferedWriter(FILENAME);
+                    bufferedWriter.close();
+                } catch (IOException ioException) {
+                    // Do nothing here because if there was an error in re-creating the file
+                    // then there's nothing we can do
+                }
             }
+        } finally {
+            mFileLock.unlock();
         }
     }
 
@@ -429,90 +494,131 @@ public class Log {
      * Handles the writing of the logged entry to the log file.
      *
      * @param priority The priority/type of this log message.
-     * @param tag Used to identify the source of a log message.  It usually identifies
-     *        the class or activity where the log call occurs.
-     * @param msg The message you would like logged.
+     * @param tag      Used to identify the source of a log message.  It usually identifies
+     *                 the class or activity where the log call occurs.
+     * @param msg      The message you would like logged.
      */
-    private static void writeToFile(int priority, String tag, String msg) {
-        writeToFile(priority, tag, msg, null);
+    private static void addEntryToStack(int priority, String tag, String msg) {
+        addEntryToStack(priority, tag, msg, null);
     }
 
     /**
      * Handles the writing of the logged entry to the log file.
      *
      * @param priority The priority/type of this log message.
-     * @param tag Used to identify the source of a log message.  It usually identifies
-     *        the class or activity where the log call occurs.
-     * @param tr An exception to log.
+     * @param tag      Used to identify the source of a log message.  It usually identifies
+     *                 the class or activity where the log call occurs.
+     * @param tr       An exception to log.
      */
-    private static void writeToFile(int priority, String tag, Throwable tr) {
-        writeToFile(priority, tag, null, tr);
+    private static void addEntryToStack(int priority, String tag, Throwable tr) {
+        addEntryToStack(priority, tag, null, tr);
     }
 
     /**
      * Handles the writing of the logged entry to the log file.
      *
      * @param priority The priority/type of this log message.
-     * @param tag Used to identify the source of a log message.  It usually identifies
-     *        the class or activity where the log call occurs.
-     * @param msg The message you would like logged.
-     * @param tr An exception to log.
+     * @param tag      Used to identify the source of a log message.  It usually identifies
+     *                 the class or activity where the log call occurs.
+     * @param msg      The message you would like logged.
+     * @param tr       An exception to log.
      */
-    private static void writeToFile(int priority, String tag, String msg, Throwable tr) {
+    private static void addEntryToStack(int priority, String tag, String msg, Throwable tr) {
+        mEntriesLock.lock();
+        try {
+            if (mCurrentEntries == null) {
+                mCurrentEntries = new StringBuilder();
+            }
+
+            buildEntry(mCurrentEntries, priority, tag, msg, tr);
+            mCurrentEntries.append(mNewLine);
+        } finally {
+            mEntriesLock.unlock();
+        }
+
+        // If the executor has not been created yet or if it has been terminated
+        if (mWriteThread == null || !mWriteThread.isAlive()) {
+            mWriteThread = new WriteThread();
+            mWriteThread.start();
+        }
+    }
+
+    /**
+     * This method handles writing new entries from mCurrentEntries to the log file.
+     */
+    private static void writeToFile() {
         try {
             // If we've been provided with a context and we've successfully initialized
             if (mContext != null && mInitialized) {
-                // Append all the information we have
-                String currentEntry = buildEntry(priority, tag, msg, tr);
+                String currentEntry = "";
 
-                // If we've exceeded CIRCULAR_BUFFER_SIZE, then remove a chunk from the
-                // beginning of the file
-                if (mNumLines >= CIRCULAR_BUFFER_SIZE) {
-                    removeChunk();
+                mEntriesLock.lock();
+                try {
+                    // Get the current entries
+                    currentEntry = mCurrentEntries.toString();
+                    // Delete them from the member variable
+                    mCurrentEntries = null;
+                } finally {
+                    mEntriesLock.unlock();
                 }
 
                 // Open the file to write to
                 // Will create a file if it's not found
                 BufferedWriter bufferedWriter = getBufferedWriter(FILENAME);
-                // Append to the end of the existing file
-                bufferedWriter.append(currentEntry);
+                bufferedWriter.write(currentEntry);
                 bufferedWriter.newLine();
                 bufferedWriter.close();
 
-                // Find the number of occurrences of "\n" in the current entry
-                int count = 0;
+                // An alternative to this is:
+                /*// Find the number of occurrences of '\n' in the current entry
                 for (int i = 0; i < currentEntry.length(); i++) {
                     if (currentEntry.charAt(i) == '\n') {
-                        count++;
+                        mNumLines++;
                     }
-                }
+                }*/
+                // The reason the above code was not used was so that the system's new line
+                // character(s) could be used
+                mNumLines += currentEntry.length() - currentEntry.replaceAll(mNewLine, "").length();
 
-                // Increment the number of lines in this file by the number of lines in the entry
-                // plus 1 for the new line appended to bufferedWriter
-                mNumLines += count + 1;
+                trimFileToSize();
             }
         } catch (IOException ioException) {
             // We've already made sure that init() was successful, which requires the log
             // file to be opened, so we can ignore this exception.
-            // Might want to log it with android.util.Log
         }
     }
 
     /**
-     * Removes NUM_LINES_PER_CHUNK lines from the beginning of the file specified by FILENAME.
-     * To do this, a temporary file is created and deleted. This function also keeps mNumLines
-     * accurate by subtracting NUM_LINES_PER_CHUNK from it.
+     * Handles trimming the log file to the correct size and keeps the circular buffer intact.
      */
-    private static void removeChunk() {
+    private static void trimFileToSize() {
+        // If we exceed CIRCULAR_BUFFER_SIZE, trim it down to be below CIRCULAR_BUFFER_SIZE
+        if (mNumLines > CIRCULAR_BUFFER_SIZE) {
+            // Determine how many extra lines we have
+            // Our target # of lines is 1 chunk less than CIRCULAR_BUFFER_SIZE
+            int diff = mNumLines - (CIRCULAR_BUFFER_SIZE - NUM_LINES_PER_CHUNK);
 
+            removeLines(diff);
+        }
+    }
+
+    /**
+     * Removes numLines lines from the beginning of the file with the name FILENAME.
+     * To do this, a temporary file is created and deleted. This function also keeps mNumLines
+     * accurate by subtracting numLines from it.
+     * <p/>
+     * This method must only ever be called from a thread that has mFileLock locked.
+     */
+    private static void removeLines(int numLinesToRemove) {
         boolean eofEarly = false;
+
         try {
             // Create a BufferedReader to read the existing file, and a BufferedWriter to write to
             // a temporary file
             BufferedReader bufferedReader = getBufferedReader(FILENAME);
 
-            // Read and discard the first NUM_LINES_PER_CHUNK lines
-            for (int i = 0; i < NUM_LINES_PER_CHUNK; i++) {
+            // Read and discard the first numLines lines
+            for (int i = 0; i < numLinesToRemove; i++) {
                 // If we get to the end of the file while still discarding lines
                 if (bufferedReader.readLine() == null) {
                     // Don't do any more reading/writing operations, just delete the whole file
@@ -549,8 +655,8 @@ public class Log {
         // Rename the temp file to the permanent file
         tempFile.renameTo(permanentFile);
 
-        // We just removed NUM_LINES_PER_CHUNK lines
-        mNumLines -= NUM_LINES_PER_CHUNK;
+        // We just removed numLines lines
+        mNumLines -= numLinesToRemove;
 
         // Prevent the number of entries from going negative
         if (mNumLines < 0) {
@@ -561,60 +667,56 @@ public class Log {
     /**
      * Create an entry from the information passed to one of the Log functions.
      *
-     * @param priority The priority/type of this log message.
-     * @param tag Used to identify the source of a log message.  It usually identifies
-     *        the class or activity where the log call occurs.
-     * @param msg The message you would like logged.
-     * @param tr An exception to log.
-     * @return A String representing the entry.
+     * @param stringBuilder A StringBuilder that the current entry will be appended to.
+     * @param priority      The priority/type of this log message.
+     * @param tag           Used to identify the source of a log message.  It usually identifies
+     *                      the class or activity where the log call occurs.
+     * @param msg           The message you would like logged.
+     * @param tr            An exception to log.
      */
-    private static String buildEntry(int priority, String tag, String msg, Throwable tr) {
-        // Create a StringBuilder and append our information to it, if applicable
-        StringBuilder sb = new StringBuilder();
-
+    private static void buildEntry(StringBuilder stringBuilder, int priority, String tag,
+                                   String msg, Throwable tr) {
         long now = System.currentTimeMillis();
 
         // Append each piece of information
-        sb.append(mSimpleDateFormat.format(new Date(now)));
+        stringBuilder.append(mSimpleDateFormat.format(new Date(now)));
 
         // Append the priority
-        sb.append(" [");
+        stringBuilder.append(" [");
         switch (priority) {
             case VERBOSE:
-                sb.append("VERBOSE");
+                stringBuilder.append("VERBOSE");
                 break;
             case DEBUG:
-                sb.append("DEBUG");
+                stringBuilder.append("DEBUG");
                 break;
             case INFO:
-                sb.append("INFO");
+                stringBuilder.append("INFO");
                 break;
             default:
             case WARN:
-                sb.append("WARNING");
+                stringBuilder.append("WARNING");
                 break;
             case ERROR:
-                sb.append("ERROR");
+                stringBuilder.append("ERROR");
                 break;
             case ASSERT:
-                sb.append("ASSERT");
+                stringBuilder.append("ASSERT");
                 break;
         }
-        sb.append(']');
+        stringBuilder.append(']');
 
         // Append the tag, message and throwable
         if (tag != null) {
-            sb.append(' ').append(tag);
+            stringBuilder.append(' ').append(tag);
         }
         if (msg != null) {
-            sb.append(' ').append(msg);
+            stringBuilder.append(' ').append(msg);
         }
         if (tr != null) {
             // As per android.util.Log format
-            sb.append('\n').append(getStackTraceString(tr));
+            stringBuilder.append(mNewLine).append(getStackTraceString(tr));
         }
-
-        return sb.toString();
     }
 
     /**
@@ -659,5 +761,62 @@ public class Log {
      */
     private static BufferedWriter getBufferedWriter(String fileName) throws FileNotFoundException {
         return new BufferedWriter(new PrintWriter(getOutputStream(fileName)));
+    }
+
+    /**
+     * A separate thread to handle writing to the log file. When the thread has had no work to do
+     * for THREAD_KEEP_ALIVE_MILLIS milliseconds, it kills itself.
+     */
+    private static class WriteThread extends Thread {
+
+        /**
+         * The number of milliseconds after not receiving any new logs before the thread kills
+         * itself.
+         */
+        private static final long THREAD_KEEP_ALIVE_MILLIS = 1000;
+
+        /**
+         * The time, in terms of System.currentTimeMillis() of the last write to the log file.
+         */
+        private long mTimeOfLastEntry = 0;
+
+        /**
+         * Record the time that the thread starts
+         */
+        @Override
+        public synchronized void start() {
+            super.start();
+
+            // Initialize the time of the last action to be the start time, so that the time
+            // difference in run() is < THREAD_KEEP_ALIVE_MILLIS
+            mTimeOfLastEntry = System.currentTimeMillis();
+        }
+
+        /**
+         * The main method of the thread
+         */
+        @Override
+        public void run() {
+            boolean running = true;
+
+            while (running) {
+                // If we still have entries to write
+                if (mCurrentEntries != null) {
+                    mFileLock.lock();
+                    try {
+                        // Write the entry to file
+                        writeToFile();
+                    } finally {
+                        mFileLock.unlock();
+                    }
+
+                    mTimeOfLastEntry = System.currentTimeMillis();
+                } else if ((System.currentTimeMillis() - mTimeOfLastEntry) >
+                        THREAD_KEEP_ALIVE_MILLIS) {
+                    // If we don't have anything to do on this thread and we timed out
+                    running = false;
+                }
+            }
+        }
     }
 }
