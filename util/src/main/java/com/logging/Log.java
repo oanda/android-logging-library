@@ -10,8 +10,6 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.LineNumberInputStream;
-import java.io.LineNumberReader;
-import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -115,7 +113,7 @@ public class Log {
     /**
      * A SimpleDateFormat object used to create a timestamp for each entry.
      */
-    private static final SimpleDateFormat simpleDateFormat = new SimpleDateFormat("MM-dd kk:mm:ss.SSS");
+    private static final SimpleDateFormat mSimpleDateFormat = new SimpleDateFormat("MM-dd kk:mm:ss.SSS");
 
     /**
      * Keeps track of the number of entries in the log file
@@ -391,7 +389,7 @@ public class Log {
 
         try {
             // Read the entire file and append it to the StringBuilder
-            BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(getInputStream(FILENAME)));
+            BufferedReader bufferedReader = getBufferedReader(FILENAME);
 
             String currentLine;
             // Step through the file line by line and add each line to the StringBuilder
@@ -418,7 +416,7 @@ public class Log {
 
             try {
                 // Re-create the file, but leave it empty
-                BufferedWriter bufferedWriter = new BufferedWriter(new PrintWriter(getOutputStream(FILENAME)));
+                BufferedWriter bufferedWriter = getBufferedWriter(FILENAME);
                 bufferedWriter.close();
             } catch (IOException ioException) {
                 // Do nothing here because if there was an error in re-creating the file, then there's
@@ -475,7 +473,7 @@ public class Log {
 
                 // Open the file to write to
                 // Will create a file if it's not found
-                BufferedWriter bufferedWriter = new BufferedWriter(new PrintWriter(getOutputStream(FILENAME)));
+                BufferedWriter bufferedWriter = getBufferedWriter(FILENAME);
                 // Append to the end of the existing file
                 bufferedWriter.append(currentEntry);
                 bufferedWriter.newLine();
@@ -511,7 +509,7 @@ public class Log {
         try {
             // Create a BufferedReader to read the existing file, and a BufferedWriter to write to
             // a temporary file
-            BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(getInputStream(FILENAME)));
+            BufferedReader bufferedReader = getBufferedReader(FILENAME);
 
             // Read and discard the first NUM_LINES_PER_CHUNK lines
             for (int i = 0; i < NUM_LINES_PER_CHUNK; i++) {
@@ -524,7 +522,7 @@ public class Log {
             }
 
             if (!eofEarly) {
-                BufferedWriter bufferedWriter = new BufferedWriter(new OutputStreamWriter(getOutputStream(TEMP_FILENAME)));
+                BufferedWriter bufferedWriter = getBufferedWriter(TEMP_FILENAME);
 
                 String currentLine;
                 // Step through the rest of the file and write each line to the temporary file
@@ -577,7 +575,7 @@ public class Log {
         long now = System.currentTimeMillis();
 
         // Append each piece of information
-        sb.append(simpleDateFormat.format(new Date(now)));
+        sb.append(mSimpleDateFormat.format(new Date(now)));
 
         // Append the priority
         sb.append(" [");
@@ -631,6 +629,17 @@ public class Log {
     }
 
     /**
+     * Get a BufferedReader to represent the specified file.
+     *
+     * @param fileName The name of the file to open.
+     * @return A BufferedReader representing the file.
+     * @throws FileNotFoundException If the file could not be opened.
+     */
+    private static BufferedReader getBufferedReader(String fileName) throws FileNotFoundException {
+        return new BufferedReader(new InputStreamReader(getInputStream(fileName)));
+    }
+
+    /**
      * Get a FileOutputStream to represent the specified file.
      *
      * @param fileName The name of the file to open.
@@ -639,5 +648,16 @@ public class Log {
      */
     private static FileOutputStream getOutputStream(String fileName) throws FileNotFoundException {
         return mContext.openFileOutput(fileName, Context.MODE_APPEND);
+    }
+
+    /**
+     * Get a BufferedWriter to represent the specified file.
+     *
+     * @param fileName The name of the file to open.
+     * @return A BufferedWriter representing the file.
+     * @throws FileNotFoundException If the file could not be opened.
+     */
+    private static BufferedWriter getBufferedWriter(String fileName) throws FileNotFoundException {
+        return new BufferedWriter(new PrintWriter(getOutputStream(fileName)));
     }
 }
