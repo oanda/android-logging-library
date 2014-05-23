@@ -5,13 +5,13 @@ import android.content.Context;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.io.LineNumberInputStream;
-import java.io.PrintWriter;
+import java.io.LineNumberReader;
+import java.io.OutputStreamWriter;
+import java.io.Reader;
+import java.io.Writer;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -109,7 +109,7 @@ public class Log {
     /**
      * The name of the temporary file to use while removing a "chunk".
      */
-    private static final String TEMP_FILENAME = '~' + FILENAME;
+    static final String TEMP_FILENAME = '~' + FILENAME;
 
     /**
      * The system's newline String
@@ -145,11 +145,6 @@ public class Log {
     private static final AtomicBoolean mRequestedClearLog = new AtomicBoolean(false);
 
     /**
-     * Whether or not the init method has been successfully called.
-     */
-    private static boolean mInitialized;
-
-    /**
      * Context that provides access to the file system. Should be a reference to the
      * application's main activity.
      */
@@ -159,6 +154,11 @@ public class Log {
      * The dedicated thread for writing new entries to the log file.
      */
     private static WriteThread mWriteThread;
+
+    /**
+     * Whether or not the init method has been successfully called.
+     */
+    private static boolean mInitialized;
 
     /**
      * Avoid instances and subclasses of Log
@@ -422,7 +422,7 @@ public class Log {
     public static File getLogFile() {
         if (mInitialized) {
             // Return a File representing the FILENAME in the getFileStreamPath() directory
-            return new File(mContext.getFileStreamPath(FILENAME), FILENAME);
+            return mContext.getFileStreamPath(FILENAME);
         } else {
             return null;
         }
@@ -437,7 +437,8 @@ public class Log {
      */
     public static String readLog() {
         if (mInitialized) {
-            StringBuilder stringBuilder = new StringBuilder();
+            // Give the StringBuilder an approximate size of the file
+            StringBuilder stringBuilder = new StringBuilder(CIRCULAR_BUFFER_SIZE * Entry.APPROXIMATE_LENGTH_PER_ENTRY);
 
             mFileLock.lock();
             try {
@@ -471,8 +472,11 @@ public class Log {
 
     /**
      * Clears the log.
+     *
+     * @return True if the request to clear the log was processed, false otherwise (if Log.init()
+     * wasn't called)
      */
-    public static void clearLog() {
+    public static boolean clearLog() {
         if (mInitialized) {
             // Make mRequestedClearLog true while we clear the queue. This causes the write thread to
             // cancel writing what it has received from the queue.
@@ -482,6 +486,8 @@ public class Log {
             // Start the write thread if it's not already started
             startWriteThread();
         }
+
+        return mInitialized;
     }
 
     /**
@@ -492,22 +498,26 @@ public class Log {
      * that might happen a short time later.
      */
     static void waitUntilFinishedWriting() {
-        try {
-            mWriteThread.join();
-        } catch (InterruptedException e) {
-            e.printStackTrace();
+        if (mInitialized) {
+            if (mWriteThread != null && mWriteThreadRunning.get()) {
+                try {
+                    mWriteThread.join();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
         }
     }
 
     /**
-     * Get a FileInputStream to represent the specified file.
+     * Get a Reader to represent the specified file.
      *
      * @param fileName The name of the file to open.
-     * @return A FileInputStream representing the file.
+     * @return A Reader representing the file.
      * @throws FileNotFoundException If the file could not be opened.
      */
-    private static FileInputStream getInputStream(String fileName) throws FileNotFoundException {
-        return mContext.openFileInput(fileName);
+    private static Reader getReader(String fileName) throws FileNotFoundException {
+        return new InputStreamReader(mContext.openFileInput(fileName));
     }
 
     /**
@@ -517,19 +527,23 @@ public class Log {
      * @return A BufferedReader representing the file.
      * @throws FileNotFoundException If the file could not be opened.
      */
-    private static BufferedReader getBufferedReader(String fileName) throws FileNotFoundException {
-        return new BufferedReader(new InputStreamReader(getInputStream(fileName)));
+    static BufferedReader getBufferedReader(String fileName) throws FileNotFoundException {
+        if (mInitialized) {
+            return new BufferedReader(getReader(fileName));
+        } else {
+            return null;
+        }
     }
 
     /**
-     * Get a FileOutputStream to represent the specified file. The file will be opened
+     * Get a Writer to represent the specified file.
      *
      * @param fileName The name of the file to open.
-     * @return A FileOutputStream representing the file.
+     * @return A Writer representing the file.
      * @throws FileNotFoundException If the file could not be opened.
      */
-    private static FileOutputStream getOutputStream(String fileName) throws FileNotFoundException {
-        return mContext.openFileOutput(fileName, Context.MODE_APPEND);
+    private static Writer getWriter(String fileName) throws FileNotFoundException {
+        return new OutputStreamWriter(mContext.openFileOutput(fileName, Context.MODE_APPEND));
     }
 
     /**
@@ -539,8 +553,12 @@ public class Log {
      * @return A BufferedWriter representing the file.
      * @throws FileNotFoundException If the file could not be opened.
      */
-    private static BufferedWriter getBufferedWriter(String fileName) throws FileNotFoundException {
-        return new BufferedWriter(new PrintWriter(getOutputStream(fileName)));
+    static BufferedWriter getBufferedWriter(String fileName) throws FileNotFoundException {
+        if (mInitialized) {
+            return new BufferedWriter(getWriter(fileName));
+        } else {
+            return null;
+        }
     }
 
     /**
@@ -548,17 +566,20 @@ public class Log {
      * write thread needs to be started to execute the items that have been queued up for it.
      */
     private static void startWriteThread() {
-        // Wait until we have the lock to prevent multiple threads from running this at the same time
-        mFileLock.lock();
-        try {
-            // If the executor has not been created yet or if it has been terminated
-            if (mWriteThread == null || !mWriteThread.isAlive()) {
-                mWriteThreadRunning.set(true);
-                mWriteThread = new WriteThread();
-                mWriteThread.start();
+        // If the executor has not been created yet or if it has been terminated
+        if (mWriteThread == null || !mWriteThread.isAlive()) {
+            // Wait until we have the lock to prevent multiple threads from running this at the same time
+            mFileLock.lock();
+            try {
+                // Check again after we acquire the lock
+                if (mWriteThread == null || !mWriteThread.isAlive()) {
+                    mWriteThreadRunning.set(true);
+                    mWriteThread = new WriteThread();
+                    mWriteThread.start();
+                }
+            } finally {
+                mFileLock.unlock();
             }
-        } finally {
-            mFileLock.unlock();
         }
     }
 
@@ -619,6 +640,7 @@ public class Log {
                 // Will create a file if it's not found
                 BufferedWriter bufferedWriter = getBufferedWriter(FILENAME);
                 bufferedWriter.write(currentEntries);
+
                 // We don't need a newLine() here because we're already appending a newline after
                 // calling buildEntry()
                 bufferedWriter.close();
@@ -636,16 +658,15 @@ public class Log {
     private static void trimFileToSize() {
         try {
             // Open the log file to read the number of lines
-            LineNumberInputStream lineNumberInputStream =
-                    new LineNumberInputStream(getInputStream(FILENAME));
+            LineNumberReader lineNumberReader = new LineNumberReader(getReader(FILENAME));
 
             // Skip by CIRCULAR_BUFFER_SIZE lines
             // While there's still stuff to skip
-            while (lineNumberInputStream.skip(CIRCULAR_BUFFER_SIZE) > 0) ;
+            while (lineNumberReader.skip(CIRCULAR_BUFFER_SIZE) > 0) ;
 
             // Get the number of lines
-            int numLines = lineNumberInputStream.getLineNumber();
-            lineNumberInputStream.close();
+            int numLines = lineNumberReader.getLineNumber();
+            lineNumberReader.close();
 
             // If we exceed CIRCULAR_BUFFER_SIZE, trim it down to be below CIRCULAR_BUFFER_SIZE
             if (numLines >= CIRCULAR_BUFFER_SIZE) {
@@ -707,11 +728,10 @@ public class Log {
 
         // Create a File representation of the temp file and the permanent file
         File tempFile = mContext.getFileStreamPath(TEMP_FILENAME);
-        File permanentFile = new File(tempFile.getParent(), FILENAME);
-        // Delete the permanent file
-        if (permanentFile.exists()) {
-            mContext.deleteFile(FILENAME);
-        }
+        String parent = tempFile.getParent();
+        File permanentFile = new File(parent != null ? parent : "", FILENAME);
+
+        mContext.deleteFile(FILENAME);
         // Rename the temp file to the permanent file
         tempFile.renameTo(permanentFile);
     }
@@ -739,6 +759,8 @@ public class Log {
      * caller's thread.
      */
     private static final class Entry {
+
+        static final int APPROXIMATE_LENGTH_PER_ENTRY = 50;
 
         private long timestamp;
         private int priority;
@@ -880,7 +902,8 @@ public class Log {
                 } else if (!mEntryQueue.isEmpty()) {
                     // If we still have entries to write
 
-                    StringBuilder stringBuilder = new StringBuilder();
+                    // Give the StringBuilder an approximate size
+                    StringBuilder stringBuilder = new StringBuilder(mEntryQueue.size() * Entry.APPROXIMATE_LENGTH_PER_ENTRY);
                     Entry currentEntry;
 
                     boolean requestedClearLog;
@@ -889,6 +912,7 @@ public class Log {
                             (currentEntry = mEntryQueue.poll()) != null) {
                         // Keep appending entries from the queue
                         currentEntry.appendToStringBuilder(stringBuilder);
+                        stringBuilder.append(mNewLine);
                     }
 
                     // Write to the file as long as the polling ended successfully (didn't end due

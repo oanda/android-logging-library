@@ -1,75 +1,153 @@
 package com.oanda.logging;
 
 import android.content.Context;
-import android.test.ActivityTestCase;
+
+import junit.framework.TestCase;
+
+import org.mockito.invocation.InvocationOnMock;
+import org.mockito.stubbing.Answer;
 
 import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.PrintWriter;
+
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
- * Testing class for com.util.Log. The reason why most methods have a 1 second delay is to ensure
- * that the write thread has had time to perform all of the write operations.
+ * Testing class for com.oanda.logging.Log.
  */
-public class LogTests extends ActivityTestCase {
+public class LogTests extends TestCase {
 
-    /**
-     * The system's newline String
-     */
-    private static final String mNewLine = System.getProperty("line.separator");
+    private final String dir = System.getProperty("user.dir");
 
-    /**
-     * The context to use with Log.init().
-     */
-    private Context mContext;
+    private final File mLogFile = new File(dir, Log.FILENAME);
+    private final File mLogFileTemp = new File(dir, Log.TEMP_FILENAME);
+
+    private Context mMockContext;
 
     @Override
     protected void setUp() throws Exception {
         super.setUp();
 
-        mContext = getInstrumentation().getTargetContext();
-        Log.init(mContext);
+        mMockContext = mock(Context.class);
 
-        Log.clearLog();
-        Log.waitUntilFinishedWriting();
+        // Mock opening input to the file system where gradle is run
+        when(mMockContext.openFileInput(Log.FILENAME)).thenAnswer(new Answer<Object>() {
+            @Override
+            public Object answer(InvocationOnMock invocationOnMock) throws Throwable {
+                return new FileInputStream(mLogFile);
+            }
+        });
+        when(mMockContext.openFileInput(Log.TEMP_FILENAME)).thenAnswer(new Answer<Object>() {
+            @Override
+            public Object answer(InvocationOnMock invocationOnMock) throws Throwable {
+                return new FileInputStream(mLogFileTemp);
+            }
+        });
+
+        // Mock opening output to the file system where gradle is run
+        when(mMockContext.openFileOutput(Log.FILENAME, Context.MODE_APPEND)).thenAnswer(new Answer<Object>() {
+            @Override
+            public Object answer(InvocationOnMock invocationOnMock) throws Throwable {
+                return new FileOutputStream(mLogFile);
+            }
+        });
+        when(mMockContext.openFileOutput(Log.TEMP_FILENAME, Context.MODE_APPEND)).thenAnswer(new Answer<Object>() {
+            @Override
+            public Object answer(InvocationOnMock invocationOnMock) throws Throwable {
+                return new FileOutputStream(mLogFileTemp);
+            }
+        });
+
+        // Mock deleting files to the file system where gradle is run
+        when(mMockContext.deleteFile(Log.FILENAME)).thenAnswer(new Answer() {
+
+            @Override
+            public Object answer(InvocationOnMock invocationOnMock) throws Throwable {
+                return mLogFile.delete();
+            }
+        });
+        when(mMockContext.deleteFile(Log.TEMP_FILENAME)).thenAnswer(new Answer() {
+
+            @Override
+            public Object answer(InvocationOnMock invocationOnMock) throws Throwable {
+                return mLogFileTemp.delete();
+            }
+        });
+
+        // Mock getting the path of a file to the file system where gradle is run
+        when(mMockContext.getFileStreamPath(Log.FILENAME)).thenReturn(mLogFile);
+        when(mMockContext.getFileStreamPath(Log.TEMP_FILENAME)).thenReturn(mLogFileTemp);
+
+        // This makes the usefulness of testLogGetLogFile() questionable, it will never fail
+        // because of this mock
+        when(mMockContext.getFilesDir()).thenReturn(mLogFile.getParentFile());
     }
 
     @Override
     protected void tearDown() throws Exception {
         super.tearDown();
 
-        mContext = null;
+        mMockContext = null;
+
+        mLogFile.delete();
+        mLogFileTemp.delete();
+    }
+
+    /**
+     * Initialize Log. Used for tests where it is given that Log is initialized.
+     */
+    private void init() {
+        Log.init(mMockContext);
+
+        Log.clearLog();
+        Log.waitUntilFinishedWriting();
     }
 
     /**
      * Scenario:
+     * Given Log is uninitialized
      * When I call Log.init with a valid Context
      * Then it should return true
      */
-    public void testLogInit() {
-        // Initialize Log with testContext
-        assertTrue("Could not initialize Log", Log.init(mContext));
+    public void testLogInitValidContext() {
+        // Initialize Log with mock Context
+        assertTrue("Could not initialize Log with valid context", Log.init(mMockContext));
     }
 
     /**
      * Scenario:
-     * Given an empty log
-     * When I log a large number (>Log.CIRCULAR_BUFFER_SIZE) of empty lines
-     * Then when I call init again, the number of lines in the log is <= Log.CIRCULAR_BUFFER_SIZE
-     * and >= Log.CIRCULAR_BUFFER_SIZE - Log.NUM_LINES_PER_CHUNK
+     * Given Log is uninitialized
+     * When I call Log.init with an invalid Context
+     * Then it should return false
+     */
+    public void testLogInitInvalidContext() {
+        // Initialize Log with null
+        assertFalse("Log was initialized with invalid context", Log.init(null));
+    }
+
+    /**
+     * Scenario:
+     * Given Log is uninitialized and I have an overfull log file
+     * When I call init
+     * Then the log file is trimmed
      */
     public void testLogInitTrimsToLength() {
-        int numExtraEntries = 205;
+        final int numExtraEntries = 205;
+
         // Manually write to the log file to create the situation where there are too many lines in the
         // file
         boolean successfullyWroteFile;
         try {
             // Manually open the file and append a bunch of lines to it
-            BufferedWriter bufferedWriter = new BufferedWriter(new PrintWriter(mContext.openFileOutput(Log.FILENAME, Context.MODE_APPEND)));
+            BufferedWriter bufferedWriter = Log.getBufferedWriter(Log.FILENAME);
             // Write more than CIRCULAR_BUFFER_SIZE lines to the buffer
             for (int i = 0; i < Log.CIRCULAR_BUFFER_SIZE + numExtraEntries; i++) {
                 // Append a whole bunch of near-empty lines to the file
-                bufferedWriter.write(" " + mNewLine);
+                bufferedWriter.write(" " + System.getProperty("line.separator"));
             }
             bufferedWriter.close();
             successfullyWroteFile = true;
@@ -79,8 +157,8 @@ public class LogTests extends ActivityTestCase {
 
         assertTrue("Could not write to the log file", successfullyWroteFile);
 
-        // Re-init because we want to test that the initialization trims the log properly
-        Log.init(mContext);
+        // Init because we want to test that the initialization trims the log properly
+        Log.init(mMockContext);
 
         String log = Log.readLog();
 
@@ -97,12 +175,43 @@ public class LogTests extends ActivityTestCase {
 
     /**
      * Scenario:
-     * Given an empty log
-     * When I log a bunch of entries exceeding the size of the circular buffer
-     * Then the number of lines in the log is <= Log.CIRCULAR_BUFFER_SIZE
-     * and >= Log.CIRCULAR_BUFFER_SIZE - Log.NUM_LINES_PER_CHUNK
+     * Given Log is uninitialized
+     * When I call each Log method that doesn't correspond with android.util.Log
+     * Then and empty String, null, or false is returned
+     */
+    public void testLogUninitialized() {
+        assertFalse("Log.init() returned true with a null Context", Log.init(null));
+        assertNull("Log.getLogFile() returned non-null without Log being initialized", Log.getLogFile());
+        assertEquals("Log.readLog() returned non-empty String without Log being initialized", "", Log.readLog());
+        assertFalse("Log.clearLog() returned true without Log being initialized", Log.clearLog());
+    }
+
+    /**
+     * Scenario:
+     * Given Log is initialized and I have an empty log
+     * When I call Log.getLogFile()
+     * Then I should get a file representing the String mContext.getFilesDir() + Log.FILENAME
+     */
+    public void testLogGetLogFile() {
+        init();
+
+        File logFile = Log.getLogFile();
+
+        String actualPath = logFile.getAbsolutePath();
+        String expectedPath = mMockContext.getFilesDir() + "/" + Log.FILENAME;
+
+        assertEquals(expectedPath, actualPath);
+    }
+
+    /**
+     * Scenario:
+     * Given Log is initialized and I have an empty log
+     * When I log entries to overfill the circular buffer
+     * Then the log is trimmed when I finish logging
      */
     public void testLogCircularBuffer() {
+        init();
+
         int numExtraEntries = 205;
 
         for (int i = 0; i < Log.CIRCULAR_BUFFER_SIZE + numExtraEntries; i++) {
@@ -127,11 +236,13 @@ public class LogTests extends ActivityTestCase {
 
     /**
      * Scenario:
-     * Given an empty log
+     * Given Log is initialized and I have an empty log
      * When I log a bunch of entries from multiple threads concurrently
      * Then the log contains each entry without overlap
      */
     public void testLogConcurrence() {
+        init();
+
         final int numTimesToLog = 200;
 
         // Thread to log a certain number of times
@@ -185,19 +296,19 @@ public class LogTests extends ActivityTestCase {
             lastChar = curChar;
         }
 
-        assertTrue("Concurrence test failed: numFirstThread: " + numFirstThread +
-                        " numSecondThread: " + numSecondThread,
-                numFirstThread == numTimesToLog && numSecondThread == numTimesToLog
-        );
+        assertEquals("The first logging thread did not appear the correct number of times", numTimesToLog, numFirstThread);
+        assertEquals("The second logging thread did not appear the correct number of times", numTimesToLog, numSecondThread);
     }
 
     /**
      * Scenario:
-     * Given an empty log
+     * Given Log is initialized and I have an empty log
      * When I log a single entry and I call Log.clearLog()
-     * Then the String representation of the log is ""
+     * Then the log has nothing in it
      */
     public void testLogClear() {
+        init();
+
         // Make sure something gets put into the log
         Log.d("LogTest", "testLogClear");
 
@@ -209,16 +320,20 @@ public class LogTests extends ActivityTestCase {
         // Wait until all writing finishes
         Log.waitUntilFinishedWriting();
 
-        assertEquals(Log.readLog(), "");
+        String log = Log.readLog();
+
+        assertEquals("", log);
     }
 
     /**
      * Scenario:
-     * Given an empty log
+     * Given Log is initialized and I have an empty log
      * When I log a single entry using Log.v
-     * Then the String representation of the log contains the logged entry
+     * Then the log contains the logged entry
      */
     public void testLogVerbose() {
+        init();
+
         long now = System.currentTimeMillis();
 
         // Call the verbose log function
@@ -235,11 +350,13 @@ public class LogTests extends ActivityTestCase {
 
     /**
      * Scenario:
-     * Given an empty log
+     * Given Log is initialized and I have an empty log
      * When I log a single entry with a Throwable using Log.v
-     * Then the String representation of the log contains the logged entry
+     * Then the log contains the logged entry
      */
     public void testLogVerboseThrowable() {
+        init();
+
         long now = System.currentTimeMillis();
 
         Throwable tr = new Throwable("Testing throwable");
@@ -254,16 +371,18 @@ public class LogTests extends ActivityTestCase {
         String log = Log.readLog();
 
         // The log should contain the entry
-        assertTrue("Log.v could not write to the log with Throwable", log.contains("[VERBOSE] LogTest testLogVerbose " + now + mNewLine + Log.getStackTraceString(tr)));
+        assertTrue("Log.v could not write to the log with Throwable", log.contains("[VERBOSE] LogTest testLogVerbose " + now + System.getProperty("line.separator") + Log.getStackTraceString(tr)));
     }
 
     /**
      * Scenario:
-     * Given an empty log
+     * Given Log is initialized and I have an empty log
      * When I log a single entry using Log.d
-     * Then the String representation of the log contains the logged entry
+     * Then the log contains the logged entry
      */
     public void testLogDebug() {
+        init();
+
         long now = System.currentTimeMillis();
 
         // Call the debug log function
@@ -280,11 +399,13 @@ public class LogTests extends ActivityTestCase {
 
     /**
      * Scenario:
-     * Given an empty log
+     * Given Log is initialized and I have an empty log
      * When I log a single entry with a Throwable using Log.d
-     * Then the String representation of the log contains the logged entry
+     * Then the log contains the logged entry
      */
     public void testLogDebugThrowable() {
+        init();
+
         long now = System.currentTimeMillis();
 
         Throwable tr = new Throwable("Testing throwable");
@@ -299,16 +420,18 @@ public class LogTests extends ActivityTestCase {
         String log = Log.readLog();
 
         // The log should contain the entry
-        assertTrue("Log.d could not write to the log with Throwable", log.contains("[DEBUG] LogTest testLogDebug " + now + mNewLine + Log.getStackTraceString(tr)));
+        assertTrue("Log.d could not write to the log with Throwable", log.contains("[DEBUG] LogTest testLogDebug " + now + System.getProperty("line.separator") + Log.getStackTraceString(tr)));
     }
 
     /**
      * Scenario:
-     * Given an empty log
+     * Given Log is initialized and I have an empty log
      * When I log a single entry using Log.i
-     * Then the String representation of the log contains the logged entry
+     * Then the log contains the logged entry
      */
     public void testLogInfo() {
+        init();
+
         long now = System.currentTimeMillis();
 
         // Call the info log function
@@ -325,11 +448,13 @@ public class LogTests extends ActivityTestCase {
 
     /**
      * Scenario:
-     * Given an empty log
+     * Given Log is initialized and I have an empty log
      * When I log a single entry with a Throwable using Log.i
-     * Then the String representation of the log contains the logged entry
+     * Then the log contains the logged entry
      */
     public void testLogInfoThrowable() {
+        init();
+
         long now = System.currentTimeMillis();
 
         Throwable tr = new Throwable("Testing throwable");
@@ -344,16 +469,18 @@ public class LogTests extends ActivityTestCase {
         String log = Log.readLog();
 
         // The log should contain the entry
-        assertTrue("Log.i could not write to the log with Throwable", log.contains("[INFO] LogTest testLogInfo " + now + mNewLine + Log.getStackTraceString(tr)));
+        assertTrue("Log.i could not write to the log with Throwable", log.contains("[INFO] LogTest testLogInfo " + now + System.getProperty("line.separator") + Log.getStackTraceString(tr)));
     }
 
     /**
      * Scenario:
-     * Given an empty log
+     * Given Log is initialized and I have an empty log
      * When I log a single entry using Log.w
-     * Then the String representation of the log contains the logged entry
+     * Then the log contains the logged entry
      */
     public void testLogWarning() {
+        init();
+
         long now = System.currentTimeMillis();
 
         // Call the warn log function
@@ -370,11 +497,13 @@ public class LogTests extends ActivityTestCase {
 
     /**
      * Scenario:
-     * Given an empty log
+     * Given Log is initialized and I have an empty log
      * When I log a single entry with a Throwable using Log.w
-     * Then the String representation of the log contains the logged entry
+     * Then the log contains the logged entry
      */
     public void testLogWarningThrowable() {
+        init();
+
         long now = System.currentTimeMillis();
 
         Throwable tr = new Throwable("Testing throwable");
@@ -389,16 +518,18 @@ public class LogTests extends ActivityTestCase {
         String log = Log.readLog();
 
         // The log should contain the entry
-        assertTrue("Log.w could not write to the log with Throwable", log.contains("[WARNING] LogTest testLogWarning " + now + mNewLine + Log.getStackTraceString(tr)));
+        assertTrue("Log.w could not write to the log with Throwable", log.contains("[WARNING] LogTest testLogWarning " + now + System.getProperty("line.separator") + Log.getStackTraceString(tr)));
     }
 
     /**
      * Scenario:
-     * Given an empty log
+     * Given Log is initialized and I have an empty log
      * When I log a single entry with a Throwable and no message using Log.w
-     * Then the String representation of the log contains the logged entry
+     * Then the log contains the logged entry
      */
     public void testLogWarningThrowableNoMessage() {
+        init();
+
         Throwable tr = new Throwable("Testing throwable");
         tr.fillInStackTrace();
 
@@ -416,11 +547,13 @@ public class LogTests extends ActivityTestCase {
 
     /**
      * Scenario:
-     * Given an empty log
+     * Given Log is initialized and I have an empty log
      * When I log a single entry using Log.e
-     * Then the String representation of the log contains the logged entry
+     * Then the log contains the logged entry
      */
     public void testLogError() {
+        init();
+
         long now = System.currentTimeMillis();
 
         // Call the error log function
@@ -437,11 +570,13 @@ public class LogTests extends ActivityTestCase {
 
     /**
      * Scenario:
-     * Given an empty log
+     * Given Log is initialized and I have an empty log
      * When I log a single entry with a Throwable using Log.e
-     * Then the String representation of the log contains the logged entry
+     * Then the log contains the logged entry
      */
     public void testLogErrorThrowable() {
+        init();
+
         long now = System.currentTimeMillis();
 
         Throwable tr = new Throwable("Testing throwable");
@@ -456,16 +591,18 @@ public class LogTests extends ActivityTestCase {
         String log = Log.readLog();
 
         // The log should contain the entry
-        assertTrue("Log.e could not write to the log with Throwable", log.contains("[ERROR] LogTest testLogError " + now + mNewLine + Log.getStackTraceString(tr)));
+        assertTrue("Log.e could not write to the log with Throwable", log.contains("[ERROR] LogTest testLogError " + now + System.getProperty("line.separator") + Log.getStackTraceString(tr)));
     }
 
     /**
      * Scenario:
-     * Given an empty log
+     * Given Log is initialized and I have an empty log
      * When I call Log.println with each priority level
-     * Then the String representation of the log contains each logged entry
+     * Then the log contains each logged entry
      */
     public void testLogPrintln() {
+        init();
+
         long now = System.currentTimeMillis();
 
         // Call the println function for each level of priority
