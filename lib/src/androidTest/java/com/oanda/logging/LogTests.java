@@ -10,8 +10,10 @@ import org.mockito.stubbing.Answer;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
 
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -91,6 +93,8 @@ public class LogTests extends TestCase {
     protected void tearDown() throws Exception {
         super.tearDown();
 
+        Log.destroy();
+
         mMockContext = null;
 
         mLogFile.delete();
@@ -131,6 +135,42 @@ public class LogTests extends TestCase {
 
     /**
      * Scenario:
+     * Given Log is uninitialized
+     * When I call Log.getReader
+     * Then a FileNotFound exception is thrown
+     */
+    public void testLogGetReaderUninitialized() {
+        boolean caughtException = false;
+
+        try {
+            Log.getReader("");
+        } catch (FileNotFoundException e) {
+            caughtException = true;
+        }
+
+        assertTrue("Log.getReader() did not throw an exception but Log uninitialized", caughtException);
+    }
+
+    /**
+     * Scenario:
+     * Given Log is uninitialized
+     * When I call Log.getWriter
+     * Then a FileNotFound exception is thrown
+     */
+    public void testLogGetWriterUninitialized() {
+        boolean caughtException = false;
+
+        try {
+            Log.getWriter("");
+        } catch (FileNotFoundException e) {
+            caughtException = true;
+        }
+
+        assertTrue("Log.getWriter() did not throw an exception but Log uninitialized", caughtException);
+    }
+
+    /**
+     * Scenario:
      * Given Log is uninitialized and I have an overfull log file
      * When I call init
      * Then the log file is trimmed
@@ -138,12 +178,15 @@ public class LogTests extends TestCase {
     public void testLogInitTrimsToLength() {
         final int numExtraEntries = 205;
 
-        // Manually write to the log file to create the situation where there are too many lines in the
-        // file
+        // Manually write to the log file to create the situation where there are too many lines
+        // in the file
         boolean successfullyWroteFile;
         try {
             // Manually open the file and append a bunch of lines to it
-            BufferedWriter bufferedWriter = Log.getBufferedWriter(Log.FILENAME);
+            // Don't call Log.getBufferedWriter here because there shouldn't be a Context since
+            // Log is uninitialized at this point
+            BufferedWriter bufferedWriter = new BufferedWriter(new OutputStreamWriter(
+                    mMockContext.openFileOutput(Log.FILENAME, Context.MODE_APPEND)));
             // Write more than CIRCULAR_BUFFER_SIZE lines to the buffer
             for (int i = 0; i < Log.CIRCULAR_BUFFER_SIZE + numExtraEntries; i++) {
                 // Append a whole bunch of near-empty lines to the file

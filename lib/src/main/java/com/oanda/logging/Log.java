@@ -125,24 +125,24 @@ public class Log {
     /**
      * The lock for file I/O operations
      */
-    private static final ReentrantLock mFileLock = new ReentrantLock();
+    private static ReentrantLock mFileLock;
 
     /**
      * The queue of entries that will be written to file by the write thread
      */
-    private static final ConcurrentLinkedQueue<Entry> mEntryQueue = new ConcurrentLinkedQueue<Entry>();
+    private static ConcurrentLinkedQueue<Entry> mEntryQueue;
 
     /**
      * Used to signal that the write thread has ended
      */
-    private static final AtomicBoolean mWriteThreadRunning = new AtomicBoolean(false);
+    private static AtomicBoolean mWriteThreadRunning;
 
     /**
      * Used to signal to the write thread that a clear request has been made. The clear request
      * should stop the write thread from polling for more entries from the queue and should not
      * write the entries that have already been polled.
      */
-    private static final AtomicBoolean mRequestedClearLog = new AtomicBoolean(false);
+    private static AtomicBoolean mRequestedClearLog;
 
     /**
      * Context that provides access to the file system. Should be a reference to the
@@ -178,13 +178,23 @@ public class Log {
      *                main activity will do.
      * @return A boolean representing the success of the initialization
      */
-    public static boolean init(Context context) {
+    public static synchronized boolean init(Context context) {
+        // Destroy the previously initialized Log to ensure that we have new instances
+        destroy();
+
         if (context == null) {
-            return (mInitialized = false);
+            return false;
         }
 
+        mFileLock = new ReentrantLock();
+        mEntryQueue = new ConcurrentLinkedQueue<Entry>();
+        mWriteThreadRunning = new AtomicBoolean(false);
+        mRequestedClearLog = new AtomicBoolean(false);
         mContext = context;
 
+        mInitialized = true;
+
+        // The first action once initialized must be to ensure that the file is the correct length
         mFileLock.lock();
         try {
             // Make sure the file is the correct length
@@ -193,7 +203,25 @@ public class Log {
             mFileLock.unlock();
         }
 
-        return (mInitialized = true);
+        return mInitialized;
+    }
+
+    /**
+     * This method removes all pointers to member objects to free them up for garbage collection.
+     * Also stops the write thread if running.
+     */
+    static void destroy() {
+        mFileLock = null;
+        mEntryQueue = null;
+        mWriteThreadRunning = null;
+        mRequestedClearLog = null;
+        mContext = null;
+        mInitialized = false;
+
+        if (mWriteThread != null) {
+            mWriteThread.interrupt();
+        }
+        mWriteThread = null;
     }
 
     /**
@@ -514,10 +542,14 @@ public class Log {
      *
      * @param fileName The name of the file to open.
      * @return A Reader representing the file.
-     * @throws FileNotFoundException If the file could not be opened.
+     * @throws FileNotFoundException If the file could not be opened or if Log is not initialized
      */
-    private static Reader getReader(String fileName) throws FileNotFoundException {
-        return new InputStreamReader(mContext.openFileInput(fileName));
+    static Reader getReader(String fileName) throws FileNotFoundException {
+        if (mInitialized) {
+            return new InputStreamReader(mContext.openFileInput(fileName));
+        } else {
+            throw new FileNotFoundException("Log not initialized");
+        }
     }
 
     /**
@@ -525,14 +557,10 @@ public class Log {
      *
      * @param fileName The name of the file to open.
      * @return A BufferedReader representing the file.
-     * @throws FileNotFoundException If the file could not be opened.
+     * @throws FileNotFoundException If the file could not be opened or if Log is not initialized
      */
-    static BufferedReader getBufferedReader(String fileName) throws FileNotFoundException {
-        if (mInitialized) {
-            return new BufferedReader(getReader(fileName));
-        } else {
-            return null;
-        }
+    private static BufferedReader getBufferedReader(String fileName) throws FileNotFoundException {
+        return new BufferedReader(getReader(fileName));
     }
 
     /**
@@ -540,10 +568,14 @@ public class Log {
      *
      * @param fileName The name of the file to open.
      * @return A Writer representing the file.
-     * @throws FileNotFoundException If the file could not be opened.
+     * @throws FileNotFoundException If the file could not be opened or if Log is not initialized
      */
-    private static Writer getWriter(String fileName) throws FileNotFoundException {
-        return new OutputStreamWriter(mContext.openFileOutput(fileName, Context.MODE_APPEND));
+    static Writer getWriter(String fileName) throws FileNotFoundException {
+        if (mInitialized) {
+            return new OutputStreamWriter(mContext.openFileOutput(fileName, Context.MODE_APPEND));
+        } else {
+            throw new FileNotFoundException("Log not initialized");
+        }
     }
 
     /**
@@ -551,14 +583,10 @@ public class Log {
      *
      * @param fileName The name of the file to open.
      * @return A BufferedWriter representing the file.
-     * @throws FileNotFoundException If the file could not be opened.
+     * @throws FileNotFoundException If the file could not be opened or if Log is not initialized
      */
-    static BufferedWriter getBufferedWriter(String fileName) throws FileNotFoundException {
-        if (mInitialized) {
-            return new BufferedWriter(getWriter(fileName));
-        } else {
-            return null;
-        }
+    private static BufferedWriter getBufferedWriter(String fileName) throws FileNotFoundException {
+        return new BufferedWriter(getWriter(fileName));
     }
 
     /**
