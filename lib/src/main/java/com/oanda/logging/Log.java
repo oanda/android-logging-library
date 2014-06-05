@@ -120,7 +120,7 @@ public class Log {
      * A SimpleDateFormat object used to create a timestamp for each entry.
      */
     private static final SimpleDateFormat mSimpleDateFormat =
-            new SimpleDateFormat("MM-dd kk:mm:ss.SSS", Locale.US);
+            new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSSZ", Locale.US);
 
     /**
      * The lock for file I/O operations
