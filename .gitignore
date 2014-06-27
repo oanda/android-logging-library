@@ -1,5 +1,8 @@
 .gradle
 /local.properties
-/.idea/
 .DS_Store
+.idea/
+*/gen/
+build/
+java-gen/
 *.iml
