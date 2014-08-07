@@ -788,7 +788,7 @@ public class Log {
      */
     private static final class Entry {
 
-        static final int APPROXIMATE_LENGTH_PER_ENTRY = 50;
+        static final int APPROXIMATE_LENGTH_PER_ENTRY = 150;
 
         private long timestamp;
         private int priority;
