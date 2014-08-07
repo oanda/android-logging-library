@@ -810,9 +810,10 @@ public class Log {
          * @param stringBuilder The StringBuilder that all of the information contained
          *                      in this Entry will be appended to.
          */
-        public void appendToStringBuilder(StringBuilder stringBuilder) {
+        public void appendToStringBuilder(StringBuilder stringBuilder, Date date) {
             // Append each piece of information
-            stringBuilder.append(mSimpleDateFormat.format(new Date(timestamp)));
+            date.setTime(timestamp);
+            stringBuilder.append(mSimpleDateFormat.format(date));
 
             // Append the priority
             stringBuilder.append(" [");
@@ -889,6 +890,11 @@ public class Log {
         private long mLastWriteTime = 0;
 
         /**
+         * A Date object used to format timestamps for each entry.
+         */
+        private final Date mDate = new Date();
+
+        /**
          * Record the time that the thread starts for last trim and write time
          */
         @Override
@@ -939,7 +945,7 @@ public class Log {
                     while (!(requestedClearLog = mRequestedClearLog.get()) &&
                             (currentEntry = mEntryQueue.poll()) != null) {
                         // Keep appending entries from the queue
-                        currentEntry.appendToStringBuilder(stringBuilder);
+                        currentEntry.appendToStringBuilder(stringBuilder, mDate);
                         stringBuilder.append(mNewLine);
                     }
 
