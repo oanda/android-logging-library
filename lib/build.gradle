@@ -1,15 +1,8 @@
 apply plugin: 'com.android.library'
 
-repositories {
-    mavenCentral()
-    maven {
-        url "https://oss.sonatype.org/content/repositories/snapshots"
-    }
-}
-
 sourceSets {
     testLocal {
-        java.srcDir file('src/androidTest/java')
+        java.srcDirs = ['src/androidTest', 'src/main']
     }
 }
 
@@ -50,7 +43,6 @@ task localTest(type: Test, dependsOn: assemble) {
     testClassesDir = sourceSets.testLocal.output.classesDir
 
     android.sourceSets.main.java.srcDirs.each { dir ->
-        ;
         def buildDir = dir.getAbsolutePath().split('/')
         buildDir = (buildDir[0..(buildDir.length - 4)] + ['build', 'classes', 'debug']).join('/')
 
